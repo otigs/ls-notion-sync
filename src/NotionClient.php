@@ -5,7 +5,7 @@ namespace LightlySalted\NotionSync;
 class NotionClient
 {
     private const API_BASE = 'https://api.notion.com/v1';
-    private const API_VERSION = '2022-06-28';
+    private const API_VERSION = '2025-09-03';
     private const LOG_OPTION = 'ls_notion_sync_log';
     private const MAX_LOG_ENTRIES = 50;
     private const MAX_RETRIES = 3;
@@ -128,16 +128,23 @@ class NotionClient
     }
 
     /**
-     * Query the Notion database for a page where WP Post ID matches.
+     * Query the Notion database's data sources for a page where WP Post ID matches.
+     *
+     * Multi-source databases (API 2025-09-03) require discovering data sources
+     * first, then querying each one individually.
      *
      * @param int    $wp_post_id  The WordPress post ID to search for.
-     * @param string $database_id The Notion database ID to query.
+     * @param string $database_id The Notion database ID.
      * @param string $api_key     The Notion API key.
      * @return string|false|null Page ID on success, null if not found, false on API error.
      */
     private static function findPageByWpPostId(int $wp_post_id, string $database_id, string $api_key): string|false|null
     {
-        $url = self::API_BASE . '/databases/' . $database_id . '/query';
+        $dataSources = self::getDataSourceIds($database_id, $api_key);
+
+        if ($dataSources === false) {
+            return false; // Discovery failed — retriable
+        }
 
         $body = wp_json_encode([
             'filter' => [
@@ -149,34 +156,89 @@ class NotionClient
             'page_size' => 1,
         ]);
 
-        $response = wp_remote_post($url, [
+        foreach ($dataSources as $sourceId) {
+            $url = self::API_BASE . '/data_sources/' . $sourceId . '/query';
+
+            $response = wp_remote_post($url, [
+                'headers' => self::headers($api_key),
+                'body'    => $body,
+                'timeout' => 10,
+            ]);
+
+            if (is_wp_error($response)) {
+                error_log("[NotionSync] Data source query failed for WP Post ID {$wp_post_id}: " . $response->get_error_message());
+
+                return false;
+            }
+
+            $statusCode = wp_remote_retrieve_response_code($response);
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                error_log("[NotionSync] Data source query returned HTTP {$statusCode} for WP Post ID {$wp_post_id}");
+
+                return false;
+            }
+
+            $data = json_decode(wp_remote_retrieve_body($response), true);
+            $results = $data['results'] ?? [];
+
+            if (! empty($results)) {
+                return $results[0]['id'];
+            }
+        }
+
+        return null; // No matching page in any data source
+    }
+
+    /**
+     * Get the data source IDs for the Notion database, cached in a transient.
+     *
+     * @return string[]|false Array of data source IDs, or false on API error.
+     */
+    private static function getDataSourceIds(string $database_id, string $api_key): array|false
+    {
+        $transientKey = 'ls_notion_data_sources';
+        $cached = get_transient($transientKey);
+
+        if (is_array($cached) && ! empty($cached)) {
+            return $cached;
+        }
+
+        $url = self::API_BASE . '/databases/' . $database_id;
+
+        $response = wp_remote_get($url, [
             'headers' => self::headers($api_key),
-            'body'    => $body,
             'timeout' => 10,
         ]);
 
         if (is_wp_error($response)) {
-            error_log("[NotionSync] Database query failed for WP Post ID {$wp_post_id}: " . $response->get_error_message());
+            error_log('[NotionSync] Data source discovery failed: ' . $response->get_error_message());
 
-            return false; // Signal a retriable failure
+            return false;
         }
 
         $statusCode = wp_remote_retrieve_response_code($response);
 
         if ($statusCode < 200 || $statusCode >= 300) {
-            error_log("[NotionSync] Database query returned HTTP {$statusCode} for WP Post ID {$wp_post_id}");
+            error_log("[NotionSync] Data source discovery returned HTTP {$statusCode}");
 
-            return false; // Signal a retriable failure
+            return false;
         }
 
         $data = json_decode(wp_remote_retrieve_body($response), true);
-        $results = $data['results'] ?? [];
+        $sources = $data['data_sources'] ?? [];
 
-        if (empty($results)) {
-            return null; // No matching page — not an error, just not found
+        if (empty($sources)) {
+            error_log('[NotionSync] No data sources found on database ' . $database_id);
+
+            return false;
         }
 
-        return $results[0]['id'];
+        $ids = array_column($sources, 'id');
+
+        set_transient($transientKey, $ids, DAY_IN_SECONDS);
+
+        return $ids;
     }
 
     /**

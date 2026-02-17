@@ -34,6 +34,9 @@ class Config
 
     /**
      * Notion database ID to query for page lookups.
+     *
+     * Normalises the stored 32-char hex string to UUID format
+     * (8-4-4-4-12) if needed, since the Notion API requires hyphens.
      */
     public static function getDatabaseId(): ?string
     {
@@ -43,7 +46,16 @@ class Config
 
         $id = get_field('notion_database_id', 'option');
 
-        return ! empty($id) ? $id : null;
+        if (empty($id)) {
+            return null;
+        }
+
+        // Convert 32-char hex to UUID format if stored without hyphens
+        if (strlen($id) === 32 && strpos($id, '-') === false) {
+            $id = substr($id, 0, 8) . '-' . substr($id, 8, 4) . '-' . substr($id, 12, 4) . '-' . substr($id, 16, 4) . '-' . substr($id, 20);
+        }
+
+        return $id;
     }
 
     /**
