@@ -1,0 +1,13 @@
+{
+    "name": "lightly-salted/notion-sync",
+    "description": "WordPress → Notion post status sync",
+    "require": {
+        "php": ">=8.2",
+        "woocommerce/action-scheduler": "^3.9"
+    },
+    "autoload": {
+        "psr-4": {
+            "LightlySalted\\NotionSync\\": "src/"
+        }
+    }
+}

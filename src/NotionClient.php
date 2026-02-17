@@ -1,0 +1,194 @@
+<?php
+
+namespace LightlySalted\NotionSync;
+
+class NotionClient
+{
+    private const API_BASE = 'https://api.notion.com/v1';
+    private const API_VERSION = '2022-06-28';
+    private const LOG_OPTION = 'ls_notion_sync_log';
+    private const MAX_LOG_ENTRIES = 50;
+    private const MAX_RETRIES = 3;
+    private const RETRY_DELAYS = [30, 120]; // seconds between retry 0→1, 1→2
+
+    /**
+     * Update a Notion page's Status select property.
+     *
+     * Called by Action Scheduler via the `ls_notion_sync_status` hook.
+     */
+    public static function updateStatus(int $post_id, string $notion_page_id, string $notion_status): void
+    {
+        $apiKey = Config::getApiKey();
+
+        if (! $apiKey) {
+            error_log('[NotionSync] API key not configured — skipping sync for post ' . $post_id);
+            self::log($post_id, $notion_page_id, $notion_status, 0, false, 'API key not configured');
+
+            return;
+        }
+
+        $statusProperty = Config::getStatusProperty();
+
+        $body = wp_json_encode([
+            'properties' => [
+                $statusProperty => [
+                    'select' => [
+                        'name' => $notion_status,
+                    ],
+                ],
+            ],
+        ]);
+
+        $url = self::API_BASE . '/pages/' . $notion_page_id;
+
+        $response = wp_remote_request($url, [
+            'method'  => 'PATCH',
+            'headers' => [
+                'Authorization'  => 'Bearer ' . $apiKey,
+                'Notion-Version' => self::API_VERSION,
+                'Content-Type'   => 'application/json',
+            ],
+            'body'    => $body,
+            'timeout' => 10,
+        ]);
+
+        // Get attempt count from transient
+        $retryKey = self::retryKey($post_id, $notion_page_id);
+        $attempt = (int) get_transient($retryKey);
+
+        if (is_wp_error($response)) {
+            $errorMsg = $response->get_error_message();
+            error_log("[NotionSync] WP HTTP error for post {$post_id}: {$errorMsg}");
+            self::log($post_id, $notion_page_id, $notion_status, 0, false, $errorMsg);
+            self::maybeRetry($post_id, $notion_page_id, $notion_status, $attempt, $retryKey);
+
+            return;
+        }
+
+        $statusCode = wp_remote_retrieve_response_code($response);
+        $success = $statusCode >= 200 && $statusCode < 300;
+
+        if ($success) {
+            error_log("[NotionSync] Synced post {$post_id} → Notion page {$notion_page_id} as \"{$notion_status}\"");
+            self::log($post_id, $notion_page_id, $notion_status, $statusCode, true);
+            delete_transient($retryKey);
+
+            return;
+        }
+
+        // Rate limited — reschedule using Retry-After header
+        if ($statusCode === 429) {
+            $retryAfter = (int) wp_remote_retrieve_header($response, 'retry-after');
+
+            if ($retryAfter < 1) {
+                $retryAfter = 1;
+            }
+
+            error_log("[NotionSync] Rate limited for post {$post_id} — retrying in {$retryAfter}s");
+            self::log($post_id, $notion_page_id, $notion_status, 429, false, "Rate limited, retry in {$retryAfter}s");
+
+            self::scheduleRetry($retryAfter, $post_id, $notion_page_id, $notion_status);
+
+            return;
+        }
+
+        // Other failure — retry with backoff
+        $responseBody = wp_remote_retrieve_body($response);
+        error_log("[NotionSync] Failed for post {$post_id} — HTTP {$statusCode}: {$responseBody}");
+        self::log($post_id, $notion_page_id, $notion_status, $statusCode, false, "HTTP {$statusCode}");
+        self::maybeRetry($post_id, $notion_page_id, $notion_status, $attempt, $retryKey);
+    }
+
+    /**
+     * Retry with escalating backoff if under the max attempt count.
+     */
+    private static function maybeRetry(
+        int $post_id,
+        string $notion_page_id,
+        string $notion_status,
+        int $attempt,
+        string $retryKey
+    ): void {
+        if ($attempt >= self::MAX_RETRIES) {
+            error_log("[NotionSync] Max retries reached for post {$post_id} — giving up");
+            delete_transient($retryKey);
+
+            return;
+        }
+
+        $delay = self::RETRY_DELAYS[$attempt] ?? 120;
+        $nextAttempt = $attempt + 1;
+
+        set_transient($retryKey, $nextAttempt, HOUR_IN_SECONDS);
+
+        error_log("[NotionSync] Scheduling retry {$nextAttempt}/" . self::MAX_RETRIES . " for post {$post_id} in {$delay}s");
+
+        self::scheduleRetry($delay, $post_id, $notion_page_id, $notion_status);
+    }
+
+    /**
+     * Schedule a delayed retry via Action Scheduler, falling back to WP cron.
+     */
+    private static function scheduleRetry(int $delay, int $post_id, string $notion_page_id, string $notion_status): void
+    {
+        $args = [$post_id, $notion_page_id, $notion_status];
+
+        if (function_exists('as_schedule_single_action')) {
+            as_schedule_single_action(time() + $delay, 'ls_notion_sync_status', $args, 'notion-sync');
+        } else {
+            wp_schedule_single_event(time() + $delay, 'ls_notion_sync_status', $args);
+        }
+    }
+
+    /**
+     * Transient key for tracking retry attempts.
+     */
+    private static function retryKey(int $post_id, string $notion_page_id): string
+    {
+        return 'ls_notion_retry_' . md5($post_id . $notion_page_id);
+    }
+
+    /**
+     * Log a sync attempt to the options-based log.
+     */
+    private static function log(
+        int $post_id,
+        string $notion_page_id,
+        string $notion_status,
+        int $status_code,
+        bool $success,
+        string $error = ''
+    ): void {
+        $log = get_option(self::LOG_OPTION, []);
+
+        if (! is_array($log)) {
+            $log = [];
+        }
+
+        array_unshift($log, [
+            'post_id'        => $post_id,
+            'notion_page_id' => $notion_page_id,
+            'notion_status'  => $notion_status,
+            'status_code'    => $status_code,
+            'success'        => $success,
+            'error'          => $error,
+            'timestamp'      => gmdate('c'),
+        ]);
+
+        $log = array_slice($log, 0, self::MAX_LOG_ENTRIES);
+
+        update_option(self::LOG_OPTION, $log, false);
+    }
+
+    /**
+     * Get the sync log for display.
+     *
+     * @return array<int, array{post_id: int, notion_page_id: string, notion_status: string, status_code: int, success: bool, error: string, timestamp: string}>
+     */
+    public static function getLog(int $limit = 20): array
+    {
+        $log = get_option(self::LOG_OPTION, []);
+
+        return is_array($log) ? array_slice($log, 0, $limit) : [];
+    }
+}
