@@ -46,26 +46,20 @@ class StatusListener
             return;
         }
 
-        // 6. Must have a linked Notion page
-        $notionPageId = get_post_meta($post->ID, '_notion_page_id', true);
-        if (empty($notionPageId)) {
-            return;
-        }
-
-        // 7. Status must be in the mapping
+        // 6. Status must be in the mapping
         $statusMap = Config::getStatusMap();
         if (! isset($statusMap[$new_status])) {
             return;
         }
 
-        // 8. Deduplication — only one job per post per request
+        // 7. Deduplication — only one job per post per request
         if (isset(self::$queued[$post->ID])) {
             return;
         }
 
         $mappedStatus = $statusMap[$new_status];
 
-        self::enqueue($post->ID, $notionPageId, $mappedStatus);
+        self::enqueue($post->ID, $mappedStatus);
 
         self::$queued[$post->ID] = true;
     }
@@ -73,7 +67,7 @@ class StatusListener
     /**
      * Handle permanent post deletion.
      *
-     * Hooked to `before_delete_post` — captures the Notion page ID
+     * Hooked to `before_delete_post` so the sync job is enqueued
      * before WordPress removes the post and its meta.
      */
     public static function onDelete(int $post_id, WP_Post $post): void
@@ -98,26 +92,20 @@ class StatusListener
             return;
         }
 
-        // 5. Must have a linked Notion page
-        $notionPageId = get_post_meta($post_id, '_notion_page_id', true);
-        if (empty($notionPageId)) {
-            return;
-        }
-
-        // 6. "deleted" must be in the status mapping
+        // 5. "deleted" must be in the status mapping
         $statusMap = Config::getStatusMap();
         if (! isset($statusMap['deleted'])) {
             return;
         }
 
-        // 7. Deduplication
+        // 6. Deduplication
         if (isset(self::$queued[$post_id])) {
             return;
         }
 
         $mappedStatus = $statusMap['deleted'];
 
-        self::enqueue($post_id, $notionPageId, $mappedStatus);
+        self::enqueue($post_id, $mappedStatus);
 
         self::$queued[$post_id] = true;
     }
@@ -128,9 +116,9 @@ class StatusListener
      * Action Scheduler loads during `plugins_loaded`, but this mu-plugin's
      * hooks can fire before that (e.g. during early wp_insert_post calls).
      */
-    private static function enqueue(int $post_id, string $notionPageId, string $mappedStatus): void
+    private static function enqueue(int $post_id, string $mappedStatus): void
     {
-        $args = [$post_id, $notionPageId, $mappedStatus];
+        $args = [$post_id, $mappedStatus];
 
         if (function_exists('as_enqueue_async_action')) {
             as_enqueue_async_action('ls_notion_sync_status', $args, 'notion-sync');

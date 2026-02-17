@@ -17,8 +17,8 @@ if (! defined('ABSPATH')) {
 // Catch all post status transitions (publish, draft, trash, restore, etc.)
 add_action('transition_post_status', [StatusListener::class, 'onTransition'], 10, 3);
 
-// Capture _notion_page_id before permanent deletion removes post meta
+// Enqueue sync job before permanent deletion removes post meta
 add_action('before_delete_post', [StatusListener::class, 'onDelete'], 10, 2);
 
-// Action Scheduler callback — executes the Notion API PATCH
-add_action('ls_notion_sync_status', [NotionClient::class, 'updateStatus'], 10, 3);
+// Action Scheduler callback — queries Notion DB then patches page status
+add_action('ls_notion_sync_status', [NotionClient::class, 'updateStatus'], 10, 2);

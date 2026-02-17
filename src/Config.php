@@ -33,6 +33,20 @@ class Config
     }
 
     /**
+     * Notion database ID to query for page lookups.
+     */
+    public static function getDatabaseId(): ?string
+    {
+        if (! function_exists('get_field')) {
+            return null;
+        }
+
+        $id = get_field('notion_database_id', 'option');
+
+        return ! empty($id) ? $id : null;
+    }
+
+    /**
      * The Notion property name for the Status select field.
      */
     public static function getStatusProperty(): string
