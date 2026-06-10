@@ -5,7 +5,7 @@ namespace LightlySalted\NotionSync;
 class NotionClient
 {
     private const API_BASE = 'https://api.notion.com/v1';
-    private const API_VERSION = '2025-09-03';
+    private const API_VERSION = '2026-03-11';
     private const LOG_OPTION = 'ls_notion_sync_log';
     private const MAX_LOG_ENTRIES = 50;
     private const MAX_RETRIES = 3;

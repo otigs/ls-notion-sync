@@ -28,6 +28,8 @@ class PostSerializer
     {
         $thumbId = get_post_thumbnail_id($post);
 
+        $hasEditor = in_array($post->post_type, PostUpdater::EDITOR_POST_TYPES, true);
+
         return [
             'id'             => $post->ID,
             'type'           => $post->post_type,
@@ -44,6 +46,9 @@ class PostSerializer
                 'url' => wp_get_attachment_image_url($thumbId, 'full'),
             ] : null,
             'taxonomies'     => self::serializeTaxonomies($post),
+            'content_html'   => $hasEditor ? self::renderContent($post) : '',
+            'content_hash'   => $hasEditor ? md5($post->post_content) : '',
+            'unsplash_keyword' => (string) get_post_meta($post->ID, '_ls_unsplash_keyword', true),
             'yoast'          => [
                 'title'    => (string) get_post_meta($post->ID, '_yoast_wpseo_title', true),
                 'metadesc' => (string) get_post_meta($post->ID, '_yoast_wpseo_metadesc', true),
@@ -51,6 +56,21 @@ class PostSerializer
             ],
             'acf'            => self::serializeAcf($post),
         ];
+    }
+
+    /**
+     * Render post_content to plain HTML for transport: blocks are rendered
+     * (Gutenberg) and classic content gets paragraph tags.
+     */
+    private static function renderContent(WP_Post $post): string
+    {
+        if ($post->post_content === '') {
+            return '';
+        }
+
+        return has_blocks($post)
+            ? do_blocks($post->post_content)
+            : wpautop($post->post_content);
     }
 
     /**
