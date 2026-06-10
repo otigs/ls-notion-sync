@@ -2,8 +2,8 @@
 
 /**
  * Plugin Name: Lightly Salted — Notion Status Sync
- * Description: One-directional sync from WordPress post status changes to Notion page Status property via Action Scheduler.
- * Version: 1.0.0
+ * Description: One-directional sync from WordPress post status changes to Notion page Status property via Action Scheduler, plus an authenticated content export API consumed by the Notion worker.
+ * Version: 1.1.0
  * Author: Lightly Salted
  */
 
